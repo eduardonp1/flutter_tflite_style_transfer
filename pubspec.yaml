@@ -32,8 +32,7 @@ dependencies:
   freezed_annotation:
   image: ^2.1.12
   multi_image_picker: ^4.7.14
-  tflite_flutter:
-    path: plugins/tflite_flutter_plugin
+  tflite_flutter: ^0.9.0
 
 dev_dependencies:
   flutter_test:

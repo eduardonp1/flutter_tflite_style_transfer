@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:quiver/check.dart';
+import 'package:tflite_flutter/src/util/byte_conversion_utils.dart';
 
 import 'bindings/tensor.dart';
 import 'bindings/types.dart';
@@ -18,11 +19,11 @@ class Tensor {
   final Pointer<TfLiteTensor> _tensor;
 
   Tensor(this._tensor) {
-    checkNotNull(_tensor);
+    ArgumentError.checkNotNull(_tensor);
   }
 
   /// Name of the tensor element.
-  String get name => Utf8.fromUtf8(tfLiteTensorName(_tensor));
+  String get name => tfLiteTensorName(_tensor).toDartString();
 
   /// Data type of the tensor element.
   TfLiteType get type => tfLiteTensorType(_tensor);
@@ -34,19 +35,14 @@ class Tensor {
   /// Underlying data buffer as bytes.
   Uint8List get data {
     final data = cast<Uint8>(tfLiteTensorData(_tensor));
-//    checkState(isNotNull(data), message: 'Tensor data is null.');
     return UnmodifiableUint8ListView(
-        data?.asTypedList(tfLiteTensorByteSize(_tensor)));
+        data.asTypedList(tfLiteTensorByteSize(_tensor)));
   }
 
   /// Quantization Params associated with the model, [only Android]
   QuantizationParams get params {
-    if (_tensor != null) {
-      final ref = tfLiteTensorQuantizationParams(_tensor).ref;
-      return QuantizationParams(ref.scale, ref.zeroPoint);
-    } else {
-      return QuantizationParams(0.0, 0);
-    }
+    final ref = tfLiteTensorQuantizationParams(_tensor);
+    return QuantizationParams(ref.scale, ref.zeroPoint);
   }
 
   /// Updates the underlying data buffer with new bytes.
@@ -78,7 +74,7 @@ class Tensor {
 
   /// Returns the number of elements in a flattened (1-D) view of the tensor's shape.
   static int computeNumElements(List<int> shape) {
-    var n = 1;
+    int n = 1;
     for (var i = 0; i < shape.length; i++) {
       n *= shape[i];
     }
@@ -87,25 +83,25 @@ class Tensor {
 
   /// Returns shape of an object as an int list
   static List<int> computeShapeOf(Object o) {
-    var size = computeNumDimensions(o);
-    var dimensions = List.filled(size, 0, growable: false);
+    int size = computeNumDimensions(o);
+    List<int> dimensions = List.filled(size, 0, growable: false);
     fillShape(o, 0, dimensions);
     return dimensions;
   }
 
   /// Returns the number of dimensions of a multi-dimensional array, otherwise 0.
-  static int computeNumDimensions(Object o) {
+  static int computeNumDimensions(Object? o) {
     if (o == null || !(o is List)) {
       return 0;
     }
-    if ((o as List).isEmpty) {
+    if (o.isEmpty) {
       throw ArgumentError('Array lengths cannot be 0.');
     }
-    return 1 + computeNumDimensions((o as List).elementAt(0));
+    return 1 + computeNumDimensions(o.elementAt(0));
   }
 
   /// Recursively populates the shape dimensions for a given (multi-dimensional) array)
-  static void fillShape(Object o, int dim, List<int> shape) {
+  static void fillShape(Object o, int dim, List<int>? shape) {
     if (shape == null || dim == shape.length) {
       return;
     }
@@ -117,16 +113,16 @@ class Tensor {
           'Mismatched lengths ${shape[dim]} and $len in dimension $dim');
     }
     for (var i = 0; i < len; ++i) {
-      fillShape((o as List).elementAt(0), dim + 1, shape);
+      fillShape(o.elementAt(0), dim + 1, shape);
     }
   }
 
   /// Returns data type of given object
   static TfLiteType dataTypeOf(Object o) {
     while (o is List) {
-      o = (o as List).elementAt(0);
+      o = o.elementAt(0);
     }
-    var c = o;
+    Object c = o;
     if (c is double) {
       return TfLiteType.float32;
     } else if (c is int) {
@@ -141,20 +137,20 @@ class Tensor {
   }
 
   void setTo(Object src) {
-    var bytes = _convertObjectToBytes(src);
-    var size = bytes.length;
-    final ptr = allocate<Uint8>(count: size);
+    Uint8List bytes = _convertObjectToBytes(src);
+    int size = bytes.length;
+    final ptr = calloc<Uint8>(size);
     checkState(isNotNull(ptr), message: 'unallocated');
     final externalTypedData = ptr.asTypedList(size);
     externalTypedData.setRange(0, bytes.length, bytes);
     checkState(tfLiteTensorCopyFromBuffer(_tensor, ptr.cast(), bytes.length) ==
         TfLiteStatus.ok);
-    free(ptr);
+    calloc.free(ptr);
   }
 
   Object copyTo(Object dst) {
-    var size = tfLiteTensorByteSize(_tensor);
-    final ptr = allocate<Uint8>(count: size);
+    int size = tfLiteTensorByteSize(_tensor);
+    final ptr = calloc<Uint8>(size);
     checkState(isNotNull(ptr), message: 'unallocated');
     final externalTypedData = ptr.asTypedList(size);
     checkState(
@@ -163,18 +159,19 @@ class Tensor {
     // volatile
     final bytes = externalTypedData.sublist(0);
     data = bytes;
-    var obj;
+    late Object obj;
     if (dst is Uint8List) {
       obj = bytes;
     } else if (dst is ByteBuffer) {
-      var bdata = dst.asByteData();
+      ByteData bdata = dst.asByteData();
       for (int i = 0; i < bdata.lengthInBytes; i++) {
         bdata.setUint8(i, bytes[i]);
       }
+      obj = bdata.buffer;
     } else {
       obj = _convertBytesToObject(bytes);
     }
-    free(ptr);
+    calloc.free(ptr);
     if (obj is List && dst is List) {
       _duplicateList(obj, dst);
     } else {
@@ -184,132 +181,11 @@ class Tensor {
   }
 
   Uint8List _convertObjectToBytes(Object o) {
-    if (o is Uint8List) {
-      return o;
-    }
-    if (o is ByteBuffer) {
-      return o.asUint8List();
-    }
-    var bytes = <int>[];
-    if (o is List) {
-      for (var e in o) {
-        bytes.addAll(_convertObjectToBytes(e));
-      }
-    } else {
-      return _convertElementToBytes(o);
-    }
-    return Uint8List.fromList(bytes);
-  }
-
-  Uint8List _convertElementToBytes(Object o) {
-    //TODO: add conversions for rest of the types
-    if (type == TfLiteType.float32) {
-      if (o is double) {
-        var buffer = Uint8List(4).buffer;
-        var bdata = ByteData.view(buffer);
-        bdata.setFloat32(0, o, Endian.little);
-        return buffer.asUint8List();
-      } else {
-        throw ArgumentError(
-            'The input element is ${o.runtimeType} while tensor data type is ${TfLiteType.float32}');
-      }
-    } else if (type == TfLiteType.int32) {
-      if (o is int) {
-        var buffer = Uint8List(4).buffer;
-        var bdata = ByteData.view(buffer);
-        bdata.setInt32(0, o, Endian.little);
-        return buffer.asUint8List();
-      } else {
-        throw ArgumentError(
-            'The input element is ${o.runtimeType} while tensor data type is ${TfLiteType.int32}');
-      }
-    } else if (type == TfLiteType.int64) {
-      if (o is int) {
-        var buffer = Uint8List(8).buffer;
-        var bdata = ByteData.view(buffer);
-        bdata.setInt64(0, o, Endian.big);
-        return buffer.asUint8List();
-      } else {
-        throw ArgumentError(
-            'The input element is ${o.runtimeType} while tensor data type is ${TfLiteType.int32}');
-      }
-    } else if (type == TfLiteType.int16) {
-      if (o is int) {
-        var buffer = Uint8List(2).buffer;
-        var bdata = ByteData.view(buffer);
-        bdata.setInt16(0, o, Endian.little);
-        return buffer.asUint8List();
-      } else {
-        throw ArgumentError(
-            'The input element is ${o.runtimeType} while tensor data type is ${TfLiteType.int32}');
-      }
-    } else if (type == TfLiteType.float16) {
-      if (o is double) {
-        var buffer = Uint8List(4).buffer;
-        var bdata = ByteData.view(buffer);
-        bdata.setFloat32(0, o, Endian.little);
-        return buffer.asUint8List().sublist(0, 2);
-      } else {
-        throw ArgumentError(
-            'The input element is ${o.runtimeType} while tensor data type is ${TfLiteType.float32}');
-      }
-    } else if (type == TfLiteType.int8) {
-      if (o is int) {
-        var buffer = Uint8List(1).buffer;
-        var bdata = ByteData.view(buffer);
-        bdata.setInt8(0, o);
-        return buffer.asUint8List();
-      } else {
-        throw ArgumentError(
-            'The input element is ${o.runtimeType} while tensor data type is ${TfLiteType.float32}');
-      }
-    } else {
-      throw ArgumentError(
-          'The input data type ${o.runtimeType} is unsupported');
-    }
+    return ByteConversionUtils.convertObjectToBytes(o, type);
   }
 
   Object _convertBytesToObject(Uint8List bytes) {
-    // stores flattened data
-    var list = [];
-    //TODO: add conversions for the rest of the types
-    if (type == TfLiteType.int32) {
-      for (var i = 0; i < bytes.length; i += 4) {
-        list.add(ByteData.view(bytes.buffer).getInt32(i, Endian.little));
-      }
-      return list.reshape<int>(shape);
-    } else if (type == TfLiteType.float32) {
-      for (var i = 0; i < bytes.length; i += 4) {
-        list.add(ByteData.view(bytes.buffer).getFloat32(i, Endian.little));
-      }
-      return list.reshape<double>(shape);
-    } else if (type == TfLiteType.int16) {
-      for (var i = 0; i < bytes.length; i += 2) {
-        list.add(ByteData.view(bytes.buffer).getInt16(i, Endian.little));
-      }
-      return list.reshape<int>(shape);
-    } else if (type == TfLiteType.float16) {
-      Uint8List list32 = Uint8List(bytes.length * 2);
-      for (var i = 0; i < bytes.length; i += 2) {
-        list32[i] = bytes[i];
-        list32[i + 1] = bytes[i + 1];
-      }
-      for (var i = 0; i < list32.length; i += 4) {
-        list.add(ByteData.view(list32.buffer).getFloat32(i, Endian.little));
-      }
-      return list.reshape<double>(shape);
-    } else if (type == TfLiteType.int8) {
-      for (var i = 0; i < bytes.length; i += 1) {
-        list.add(ByteData.view(bytes.buffer).getInt8(i));
-      }
-      return list.reshape<int>(shape);
-    } else if (type == TfLiteType.int64) {
-      for (var i = 0; i < bytes.length; i += 8) {
-        list.add(ByteData.view(bytes.buffer).getInt64(i));
-      }
-      return list.reshape<int>(shape);
-    }
-    return null;
+    return ByteConversionUtils.convertBytesToObject(bytes, type, shape);
   }
 
   void _duplicateList(List obj, List dst) {
@@ -335,7 +211,7 @@ class Tensor {
     }
   }
 
-  List<int> getInputShapeIfDifferent(Object input) {
+  List<int>? getInputShapeIfDifferent(Object? input) {
     if (input == null) {
       return null;
     }

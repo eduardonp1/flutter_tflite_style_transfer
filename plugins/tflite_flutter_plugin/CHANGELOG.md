@@ -1,3 +1,18 @@
+## 0.9.0 (Jun 28, 2021)
+* Support for Windows, Mac and Linux platforms.
+* Improved gpu delegate support and bug fixes.
+* Support for CoreML and XnnPack delegates.
+
+## 0.8.0 (Apr 21, 2021)
+* Null-safety major bug fix in tensor.dart
+* Expose byte-object interconversion APIs
+
+## 0.7.0 (Apr 21, 2021)
+* Stable null-safety support
+
+## 0.6.0 (Feb 26, 2021)
+* Update to Dart 2.12 and package:ffi 1.0.0.
+
 ## 0.5.0 (Jul 17, 2020)
 * Expose interpreter's address
 * Create interpreter by address.
